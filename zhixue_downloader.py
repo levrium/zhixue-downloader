@@ -9,48 +9,49 @@ import win32con
 import win32ui
 
 headers = [{}, {}]
-data = [{}, {}]
+userId = ""
 token = ""
 
 def read_HAR_file(path):
-    global headers, data, token
-    url_1 = "https://mhw.zhixue.com/homework_middle_service/stuapp/getStudentHomeWorkList"
-    url_2 = [
-        "https://mhw.zhixue.com/hw/homework/attachment/list",
-        "https://mhw.zhixue.com/hwreport/question/getStuReportDetail",
-        "https://mhw.zhixue.com/hwreport/student/studentReport"
+    global headers, userId, token
+    urls = [
+        ["https://mhw.zhixue.com/homework_middle_service/stuapp/getStudentHomeWorkList"],
+        [
+            "https://mhw.zhixue.com/hw/homework/attachment/list",
+            "https://mhw.zhixue.com/hwreport/question/getStuReportDetail",
+            "https://mhw.zhixue.com/hwreport/student/studentReport",
+            "https://mhw.zhixue.com/hw/clock/answer/getClockHomeworkDetail"
+        ]
     ]
-    url_3 = "https://mhw.zhixue.com/hw/clock/answer/getClockHomeworkDetail"
-    urls_exist = [False, False, False]
+    urls_exist = [False] * len(urls)
     
-    with open(path, "r", encoding = "utf-8") as file_HAR:
-        entries = json.loads(file_HAR.read())["log"]["entries"]
+    with open(path, "r", encoding = "utf-8") as HAR_file:
+        entries = json.loads(HAR_file.read())["log"]["entries"]
     
     for entry in entries:
         request = entry["request"]
-        if not urls_exist[0] and request["url"].startswith(url_1):
-            headers[0].clear()
-            for i in request["headers"]:
-                headers[0][i["name"]] = i["value"]
-            token = headers[0]["sucUserToken"]
-            del headers[0]["sucUserToken"]
-            urls_exist[0] = True
         
-        elif not urls_exist[1] and request["url"].split("?")[0] in url_2:
-            headers[1].clear()
-            for i in request["headers"]:
-                headers[1][i["name"]] = i["value"]
-            del headers[1]["sucUserToken"], headers[1]["Authorization"]
-            data[0] = json.loads(request["postData"]["text"])
-            del data[0]["params"]["hwId"], data[0]["params"]["stuHwId"]
-            urls_exist[1] = True
+        for i in range(len(urls)):
+            if not urls_exist[i] and any(map(lambda url: request["url"].startswith(url), urls[i])):
+                headers[i].clear()
+                for item in request["headers"]:
+                    headers[i][item["name"]] = item["value"]
+                token = headers[i]["sucUserToken"]
+                del headers[i]["sucUserToken"]
+                if "Authorization" in headers[i]:
+                    del headers[i]["Authorization"]
+                if i == 1:
+                    data = json.loads(request["postData"]["text"])
+                    if "userId" in data["base"]:
+                        userId = data["base"]["userId"]
+                    elif "studentId" in data["params"]:
+                        userId = data["params"]["studentId"]
+                urls_exist[i] = True
         
-        elif not urls_exist[2] and request["url"].startswith(url_3):
-            data[1] = json.loads(request["postData"]["text"])
-            del data[1]["base"]["sucUserToken"], data[1]["params"]["hwId"], data[1]["params"]["stuHwId"]
-            urls_exist[2] = True
+        if all(urls_exist) and userId:
+            break
     
-    if not all(urls_exist):
+    else:
         raise AttributeError("HAR 文件缺少数据")
 
 def get(url):
@@ -87,23 +88,21 @@ def analyze_homework(homework):
     hwType = homework["hwType"]
     stuHwId = homework["stuHwId"]
     file_list = []
+    data = {"base": {"appId": "APP"}, "params": {"hwId": hwId, "stuHwId": stuHwId, "studentId": userId}}
     
     match hwType:
         case 105: # 自由出题
-            data[0]["params"].update({"hwId": hwId, "stuHwId": stuHwId})
-            response_1 = post("https://mhw.zhixue.com/hw/homework/attachment/list", data[0])
-            response_2 = post("https://mhw.zhixue.com/hwreport/question/getStuReportDetail", data[0])
+            response_1 = post("https://mhw.zhixue.com/hw/homework/attachment/list", data)
+            response_2 = post("https://mhw.zhixue.com/hwreport/question/getStuReportDetail", data)
             file_list += response_1["result"]
             if "result" in response_2:
                 file_list += response_2["result"].get("answerAttachList", [])
                 for question in response_2["result"]["mainTopics"]:
-                    for i in question["subTopics"]:
-                        file_list += i["answerResList"]
+                    for item in question["subTopics"]:
+                        file_list += item["answerResList"]
         
         case 107: # 打卡任务
-            data[1]["base"].update({"sucUserToken": token})
-            data[1]["params"].update({"hwId": hwId, "stuHwId": stuHwId})
-            response = post("https://mhw.zhixue.com/hw/clock/answer/getClockHomeworkDetail", data[1])
+            response = post("https://mhw.zhixue.com/hw/clock/answer/getClockHomeworkDetail", data)
             result = response["result"]
             file_list += (
                 result.get("hwTopicAttachments", []) +
@@ -119,18 +118,18 @@ def analyze_homework(homework):
     return file_list
 
 def main():
-    global headers, data, token
-    print("智学网文件下载工具 1.0\n")
+    global headers, userId, token
+    print("智学网文件下载工具 1.1\n")
     
     # read config
     
     successful = False
     if os.path.exists("zhixue_config.json"):
         try:
-            with open("zhixue_config.json", "r", encoding = "utf-8") as file_config:
-                config = json.loads(file_config.read())
+            with open("zhixue_config.json", "r", encoding = "utf-8") as config_file:
+                config = json.loads(config_file.read())
             headers = config["headers"]
-            data = config["data"]
+            userId = config["userId"]
             token = config["token"]
             successful = True
             print("读取配置文件成功。")
@@ -143,8 +142,8 @@ def main():
         if dialog.DoModal() == win32con.IDOK:
             path = dialog.GetPathName()
             read_HAR_file(path)
-            with open("zhixue_config.json", "w", encoding = "utf-8") as file_config:
-                file_config.write(json.dumps({"headers": headers, "data": data, "token": token}))
+            with open("zhixue_config.json", "w", encoding = "utf-8") as config_file:
+                config_file.write(json.dumps({"headers": headers, "userId": userId, "token": token}))
             print("更新配置文件成功。")
         else:
             raise ImportError("读取配置文件失败")
@@ -160,20 +159,20 @@ def main():
         response = get(f"https://www.zhixue.com/container/app/checkToken?token={token}")
         updated = True
     if updated:
-        with open("zhixue_config.json", "w", encoding = "utf-8") as file_config:
-            file_config.write(json.dumps({"headers": headers, "data": data, "token": token}))
-            print("更新配置文件成功。")
+        with open("zhixue_config.json", "w", encoding = "utf-8") as config_file:
+            config_file.write(json.dumps({"headers": headers, "userId": userId, "token": token}))
+        print("更新配置文件成功。")
     
     # select subjects
     
-    response = post("https://mhw.zhixue.com/hw/answer/homework/subjects", data[1])
+    response = post("https://mhw.zhixue.com/hw/answer/homework/subjects", {"base": {"appId": "APP"}, "params": {}})
     subject_codes = []
     print()
     for i in response["result"]:
         subject_codes.append(i["code"])
         print(f"{i["code"]}: {i["name"]}")
     print()
-    subjects = input("请输入学科代码，以空格分隔：").split()
+    subjects = input("请输入学科代码，以空格分隔（不输入默认为全部）：").split()
     subjects = list(filter(lambda i: i in subject_codes, subjects))
     if len(subjects) == 0:
         subjects.append("-1")
@@ -191,6 +190,7 @@ def main():
     
     # get homework list
     
+    print("获取作业列表中……")
     homework_list = []
     if status != "1":
         for subject in subjects:
@@ -216,6 +216,7 @@ def main():
     selected_homework = input("请输入要解析的作业编号，以空格分隔：").split()
     selected_homework = map(lambda i: int(i) - 1, filter(lambda i: i.isdigit(), selected_homework))
     selected_homework = list(filter(lambda i: 0 <= i < len(homework_list), selected_homework))
+    print("解析作业中……")
     file_list = []
     for i in selected_homework:
         file_list += analyze_homework(homework_list[i])
