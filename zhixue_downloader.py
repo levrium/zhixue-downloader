@@ -63,7 +63,7 @@ def get(url):
 def post(url, data):
     headers[1].update({
         "Host": url.split("/")[2],
-        "Origin": f"https://{url.split("/")[2]}",
+        "Origin": f'https://{url.split("/")[2]}',
         "sucUserToken": token,
         "Authorization": token
     })
@@ -90,36 +90,35 @@ def analyze_homework(homework):
     file_list = []
     data = {"base": {"appId": "APP"}, "params": {"hwId": hwId, "stuHwId": stuHwId, "studentId": userId}}
     
-    match hwType:
-        case 105: # 自由出题
-            response_1 = post("https://mhw.zhixue.com/hw/homework/attachment/list", data)
-            response_2 = post("https://mhw.zhixue.com/hwreport/question/getStuReportDetail", data)
-            file_list += response_1["result"]
-            if "result" in response_2:
-                file_list += response_2["result"].get("answerAttachList", [])
-                for question in response_2["result"]["mainTopics"]:
-                    for item in question["subTopics"]:
-                        file_list += item["answerResList"]
-        
-        case 107: # 打卡任务
-            response = post("https://mhw.zhixue.com/hw/clock/answer/getClockHomeworkDetail", data)
-            result = response["result"]
-            file_list += (
-                result.get("hwTopicAttachments", []) +
-                result.get("hwAnswerAttachments", []) +
-                result["hwClockRecordPreviewResponses"][0].get("teacherAnswerAttachments", []) +
-                result["hwClockRecordPreviewResponses"][0].get("answerAttachments", [])
-            )
+    if hwType == 105: # 自由出题
+        response = post("https://mhw.zhixue.com/hw/homework/attachment/list", data)
+        file_list += [{"file": item, "type": "题目"} for item in response["result"]]
+        response = post("https://mhw.zhixue.com/hwreport/question/getStuReportDetail", data)
+        if "result" in response:
+            file_list += [{"file": item, "type": "答案"} for item in response["result"].get("answerAttachList", [])]
+            for question in response["result"]["mainTopics"]:
+                for item in question["subTopics"]:
+                    file_list += [{"file": item, "type": "提交"} for item in item["answerResList"]]
+    
+    if hwType == 107: # 打卡任务
+        response = post("https://mhw.zhixue.com/hw/clock/answer/getClockHomeworkDetail", data)
+        result = response["result"]
+        file_list += (
+            [{"file": item, "type": "题目"} for item in result.get("hwTopicAttachments", [])] +
+            [{"file": item, "type": "答案"} for item in result.get("hwAnswerAttachments", [])] +
+            [{"file": item, "type": "答案"} for item in result["hwClockRecordPreviewResponses"][0].get("teacherAnswerAttachments", [])] +
+            [{"file": item, "type": "提交"} for item in result["hwClockRecordPreviewResponses"][0].get("answerAttachments", [])]
+        )
     
     for file in file_list:
-        if not "name" in file:
-            file["name"] = Path(file["path"]).name
-    file_list = list(filter(lambda i: i["fileType"] != 5, file_list)) # file type: 1: image, 4: document, 5: text
+        if not "name" in file["file"]:
+            file["file"]["name"] = Path(file["file"]["path"]).name
+    file_list = [file for file in file_list if file["file"]["fileType"] != 5] # file type: 1: image, 4: document, 5: text
     return file_list
 
 def main():
     global headers, userId, token
-    print("智学网文件下载工具 1.1\n")
+    print("智学网文件下载工具 1.2\n")
     
     # read config
     
@@ -166,14 +165,14 @@ def main():
     # select subjects
     
     response = post("https://mhw.zhixue.com/hw/answer/homework/subjects", {"base": {"appId": "APP"}, "params": {}})
-    subject_codes = []
+    subject_codes = {}
     print()
-    for i in response["result"]:
-        subject_codes.append(i["code"])
-        print(f"{i["code"]}: {i["name"]}")
+    for item in response["result"]:
+        subject_codes[item["code"]] = item["name"]
+        print(f'{item["code"]}: {item["name"]}')
     print()
     subjects = input("请输入学科代码，以空格分隔（不输入默认为全部）：").split()
-    subjects = list(filter(lambda i: i in subject_codes, subjects))
+    subjects = [code for code in subjects if code in subject_codes]
     if len(subjects) == 0:
         subjects.append("-1")
     
@@ -191,19 +190,17 @@ def main():
     # get homework list
     
     print("获取作业列表中……")
-    homework_list = []
+    fetch_list = []
     if status != "1":
-        for subject in subjects:
-            response = get(f"https://mhw.zhixue.com/homework_middle_service/stuapp/getStudentHomeWorkList?completeStatus=0&pageIndex=1&pageSize={page_size}&subjectCode={subject}&token={token}")
-            if response["code"] != 200:
-                raise RuntimeError("获取作业列表失败")
-            homework_list += response["result"]["list"]
+        fetch_list += [{"subject": subject, "status": 0} for subject in subjects]
     if status != "0":
-        for subject in subjects:
-            response = get(f"https://mhw.zhixue.com/homework_middle_service/stuapp/getStudentHomeWorkList?completeStatus=1&pageIndex=1&pageSize={page_size}&subjectCode={subject}&token={token}")
-            if response["code"] != 200:
-                raise RuntimeError("获取作业列表失败")
-            homework_list += response["result"]["list"]
+        fetch_list += [{"subject": subject, "status": 1} for subject in subjects]
+    homework_list = []
+    for item in tqdm(fetch_list, unit = ""):
+        response = get(f'https://mhw.zhixue.com/homework_middle_service/stuapp/getStudentHomeWorkList?completeStatus={item["status"]}&pageIndex=1&pageSize={page_size}&subjectCode={item["subject"]}&token={token}')
+        if response["code"] != 200:
+            raise RuntimeError("获取作业列表失败")
+        homework_list += response["result"]["list"]
     os.system("cls")
     print("获取作业列表成功。")
     
@@ -211,14 +208,13 @@ def main():
     
     print()
     for i in range(len(homework_list)):
-        print(f"{i + 1}: {homework_list[i]["hwTitle"]}")
+        print(f'{i + 1}: [{subject_codes[homework_list[i]["subjectCode"]]}] {homework_list[i]["hwTitle"]}')
     print()
     selected_homework = input("请输入要解析的作业编号，以空格分隔：").split()
-    selected_homework = map(lambda i: int(i) - 1, filter(lambda i: i.isdigit(), selected_homework))
-    selected_homework = list(filter(lambda i: 0 <= i < len(homework_list), selected_homework))
+    selected_homework = [int(i) - 1 for i in selected_homework if i.isdigit() and 0 < int(i) <= len(homework_list)]
     print("解析作业中……")
     file_list = []
-    for i in selected_homework:
+    for i in tqdm(selected_homework, unit = ""):
         file_list += analyze_homework(homework_list[i])
     os.system("cls")
     print("解析作业成功。")
@@ -227,11 +223,10 @@ def main():
     
     print()
     for i in range(len(file_list)):
-        print(f"{i + 1}: {file_list[i]["name"]}")
+        print(f'{i + 1}: [{file_list[i]["type"]}] {file_list[i]["file"]["name"]}')
     print()
     selected_files = input("请输入要下载的文件编号，以空格分隔：").split()
-    selected_files = map(lambda i: int(i) - 1, filter(lambda i: i.isdigit(), selected_files))
-    selected_files = list(filter(lambda i: 0 <= i < len(file_list), selected_files))
+    selected_files = [int(i) - 1 for i in selected_files if i.isdigit() and 0 < int(i) <= len(file_list)]
     batch = False
     if len(selected_files) > 1:
         batch = bool(input("是否批量下载（输入任意字符代表确定，直接按回车键代表取消）："))
@@ -242,15 +237,15 @@ def main():
             path = dialog.GetPathName()
             path = str(Path(path).parent) + "\\"
             for i in selected_files:
-                url = file_list[i]["path"]
-                name = file_list[i]["name"]
+                url = file_list[i]["file"]["path"]
+                name = file_list[i]["file"]["name"]
                 print()
                 download(url, path + name)
     
     else:
         for i in selected_files:
-            url = file_list[i]["path"]
-            name = file_list[i]["name"]
+            url = file_list[i]["file"]["path"]
+            name = file_list[i]["file"]["name"]
             dialog = win32ui.CreateFileDialog(0, None, name)
             if dialog.DoModal() == win32con.IDOK:
                 path = dialog.GetPathName()
