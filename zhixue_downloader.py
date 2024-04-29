@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import time
 
 import requests
@@ -90,17 +91,24 @@ def analyze_homework(homework):
     file_list = []
     data = {"base": {"appId": "APP"}, "params": {"hwId": hwId, "stuHwId": stuHwId, "studentId": userId}}
     
-    if hwType == 105: # 自由出题
+    if hwType == 102: # 题库作业
+        response = post("https://mhw.zhixue.com/hwreport/question/getStuReportDetail", data)
+        if "result" in response:
+            for question in response["result"]["mainTopics"]:
+                content = question["content"] + question["answerHtml"] + question["analysisHtml"]
+                file_list += [{"file": {"path": item, "fileType": 1}, "type": "题目"} for item in re.findall('bigger="(.+?)"', content)]
+                file_list += [{"file": i, "type": "提交"} for item in question["subTopics"] for i in item["answerResList"]]
+    
+    elif hwType == 105: # 自由出题
         response = post("https://mhw.zhixue.com/hw/homework/attachment/list", data)
         file_list += [{"file": item, "type": "题目"} for item in response["result"]]
         response = post("https://mhw.zhixue.com/hwreport/question/getStuReportDetail", data)
         if "result" in response:
             file_list += [{"file": item, "type": "答案"} for item in response["result"].get("answerAttachList", [])]
             for question in response["result"]["mainTopics"]:
-                for item in question["subTopics"]:
-                    file_list += [{"file": item, "type": "提交"} for item in item["answerResList"]]
+                file_list += [{"file": i, "type": "提交"} for item in question["subTopics"] for i in item["answerResList"]]
     
-    if hwType == 107: # 打卡任务
+    elif hwType == 107: # 打卡任务
         response = post("https://mhw.zhixue.com/hw/clock/answer/getClockHomeworkDetail", data)
         result = response["result"]
         file_list += (
@@ -154,7 +162,7 @@ def main():
     
     while response["errorCode"] != 0:
         print("token 无效或已过期。")
-        token = input("请输入 token：")
+        token = input("请输入 token：\n")
         response = get(f"https://www.zhixue.com/container/app/checkToken?token={token}")
         updated = True
     if updated:
