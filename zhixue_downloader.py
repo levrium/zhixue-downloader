@@ -126,7 +126,7 @@ def analyze_homework(homework):
 
 def main():
     global headers, userId, token
-    print("智学网文件下载工具 1.2\n")
+    print("智学网文件下载工具 1.3\n")
     
     # read config
     
